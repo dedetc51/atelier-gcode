@@ -45,11 +45,21 @@ jobs:
           $binary = 'target\x86_64-pc-windows-msvc\release\atelier-gcode.exe'
           $setup = Join-Path $PWD 'dist\Atelier-Gcode-Setup-x64.exe'
           ./packaging/windows/package.ps1 -Version $env:APP_VERSION -Binary $binary -Output $setup
-          ./packaging/windows/smoke.ps1 -Version $env:APP_VERSION -Binary $binary -Setup $setup
+
+          # Reuse the build cache for a genuinely older test client on this disposable runner.
+          $manifest = Get-Content Cargo.toml -Raw
+          $fixture = $manifest.Replace(('version = "{0}"' -f $env:APP_VERSION), 'version = "0.0.1"')
+          if ($fixture -eq $manifest) { throw "Version de départ introuvable." }
+          [IO.File]::WriteAllText((Join-Path $PWD Cargo.toml), $fixture)
+          cargo build --release --offline --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $old = Join-Path $PWD 'dist\test\ancien-client.exe'
+          ./packaging/windows/package.ps1 -Version '0.0.1' -Binary $binary -Output $old
+          ./packaging/windows/smoke.ps1 -Version $env:APP_VERSION -PreviousSetup $old -Setup $setup
       - uses: actions/upload-artifact@v4
         with:
           name: windows-setup
-          path: dist/Atelier-Gcode-Setup-x64.exe
+          path: dist/
           if-no-files-found: error
 
   release:
@@ -86,3 +96,20 @@ jobs:
           esac
           gh release create "$tag" Atelier-Gcode-Setup-x64.exe --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" --title "Atelier G-code $VERSION" --generate-notes --latest
+
+  verify-update:
+    name: Mise à jour depuis la publication GitHub
+    needs: [windows, release]
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-setup
+          path: dist
+      - name: Ouvrir l’ancienne version et vérifier la mise à jour automatique
+        env:
+          APP_VERSION: ${{ needs.windows.outputs.version }}
+        shell: pwsh
+        run: |
+          ./packaging/windows/smoke.ps1 -Version $env:APP_VERSION -PreviousSetup (Resolve-Path dist/test/ancien-client.exe) -Setup (Resolve-Path dist/Atelier-Gcode-Setup-x64.exe) -DepuisGitHub
