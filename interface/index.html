@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Atelier G-code</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+  <script src="/print.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="shell topbar-content">
+      <div class="brand"><span class="brand-mark" aria-hidden="true"></span>Atelier G-code</div>
+      <button type="button" id="export" class="quiet" disabled>Exporter le CSV</button>
+    </div>
+  </header>
+
+  <main class="shell">
+    <header class="page-heading">
+      <h1>Comparer deux tranchages</h1>
+      <p>Mesure les déplacements et la durée estimée sur tes exports Bambu Studio.</p>
+    </header>
+
+    <div class="slots">
+      <section class="slot" data-slot="reference" aria-labelledby="reference-label">
+        <div class="slot-heading">
+          <h2 id="reference-label">Référence</h2>
+          <button type="button" class="quiet" data-open aria-label="Importer le tranchage de référence">Importer</button>
+        </div>
+        <input type="file" accept=".gcode,.3mf" data-file hidden>
+        <p class="file-name" data-name>Choisis un export .gcode ou .gcode.3mf</p>
+        <p class="fine" data-context></p>
+        <label data-plate-picker hidden>Plateau de référence <select data-plate></select></label>
+        <p class="slot-status fine" data-status role="status"></p>
+      </section>
+      <section class="slot" data-slot="variant" aria-labelledby="variant-label">
+        <div class="slot-heading">
+          <h2 id="variant-label">Variante</h2>
+          <div class="actions">
+            <button type="button" class="quiet text-button" data-clear hidden>Retirer</button>
+            <button type="button" class="primary" data-open aria-label="Importer un tranchage variante">Importer</button>
+          </div>
+        </div>
+        <input type="file" accept=".gcode,.3mf" data-file hidden>
+        <p class="file-name" data-name>Ajoute un autre tranchage du même plateau</p>
+        <p class="fine" data-context></p>
+        <label data-plate-picker hidden>Plateau de la variante <select data-plate></select></label>
+        <p class="slot-status fine" data-status role="status"></p>
+      </section>
+    </div>
+
+    <details class="surface print-panel" id="print-panel">
+      <summary>Imprimer sur la P2S</summary>
+      <form id="print-form" autocomplete="off">
+        <label for="print-source">Plateau à imprimer</label>
+        <select id="print-source"></select>
+        <p id="print-source-note" class="fine"></p>
+        <fieldset class="print-fields" id="printer-fields" disabled>
+          <legend>Connexion locale à la P2S</legend>
+          <label>Adresse IPv4<input name="ip" required placeholder="192.168.1.50" spellcheck="false"></label>
+          <label>Numéro de série<input name="serial" required minlength="8" maxlength="32" spellcheck="false"></label>
+          <label>Code d’accès LAN<input name="access_code" type="password" required minlength="8" maxlength="8"></label>
+          <button type="button" class="quiet" id="print-connect">Tester la connexion</button>
+        </fieldset>
+        <div id="print-filaments" class="print-filaments" hidden></div>
+        <label class="print-confirm" id="print-confirm-label" hidden>
+          <input type="checkbox" id="print-confirm" required>
+          Le plateau est libre. La plaque, la buse et les bobines correspondent au tranchage.
+        </label>
+        <div class="actions">
+          <button type="submit" class="primary" id="print-submit" disabled>Envoyer et lancer l’impression</button>
+        </div>
+        <p id="print-status" class="print-status" role="status"></p>
+      </form>
+    </details>
+
+    <p id="starting" role="status">Chargement de l’exemple…</p>
+    <div id="results" hidden>
+      <p id="pair-status" class="notice" role="status" hidden></p>
+      <div id="metrics" class="metrics" aria-label="Mesures du plateau"></div>
+
+      <div class="workspace">
+        <section class="surface map-panel" aria-labelledby="map-title">
+          <div class="panel-heading">
+            <div>
+              <h2 id="map-title">Trajectoires XY</h2>
+              <p id="layer-caption" class="fine"></p>
+            </div>
+            <div id="view-picker" class="segmented" role="group" aria-label="Tranchage affiché" hidden>
+              <button type="button" data-view="reference" aria-pressed="true">Référence</button>
+              <button type="button" data-view="variant" aria-pressed="false">Variante</button>
+            </div>
+          </div>
+          <div class="map">
+            <canvas id="map" role="img" aria-label="Plan des trajectoires sur la couche sélectionnée"></canvas>
+          </div>
+          <div id="legend" class="legend" aria-label="Tracés visibles">
+            <label><input type="checkbox" data-trace="wall" checked><span class="swatch wall"></span>Parois extérieures</label>
+            <label><input type="checkbox" data-trace="travel" checked><span class="swatch travel"></span>Trajets à vide</label>
+            <label><input type="checkbox" data-trace="cross" checked><span class="swatch cross"></span>Croisements projetés</label>
+          </div>
+          <div class="layer-control">
+            <label for="layer">Couche <output id="layer-number" for="layer"></output></label>
+            <div class="layer-slider">
+              <button type="button" id="previous" class="quiet arrow" aria-label="Couche précédente">−</button>
+              <input type="range" id="layer" min="1" step="1">
+              <button type="button" id="next" class="quiet arrow" aria-label="Couche suivante">+</button>
+            </div>
+          </div>
+        </section>
+
+        <aside class="surface layer-panel" aria-labelledby="distribution-title">
+          <h2 id="distribution-title">Distance par couche</h2>
+          <p class="fine">Trajets linéaires à vide, en mètres</p>
+          <canvas id="distribution" role="img" aria-label="Distance mesurée à vide pour chaque couche"></canvas>
+          <div id="distribution-legend" class="distribution-legend"></div>
+          <h3>Couches les plus parcourues</h3>
+          <div id="hotspots" class="hotspots"></div>
+        </aside>
+      </div>
+
+      <section class="surface next-test" aria-labelledby="test-title">
+        <div>
+          <h2 id="test-title">Essai dans Bambu Studio</h2>
+          <p id="test-instruction"></p>
+        </div>
+      </section>
+
+      <details class="surface detail" id="settings">
+        <summary>Réglages suivis</summary>
+        <p class="fine" id="settings-note"></p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th scope="col">Réglage</th><th scope="col">Référence</th><th scope="col" id="variant-head">Variante</th></tr></thead>
+            <tbody id="settings-rows"></tbody>
+          </table>
+        </div>
+      </details>
+
+      <details class="surface detail">
+        <summary>Comment lire les mesures</summary>
+        <p>La durée est l’estimation inscrite par Bambu Studio. La distance mesure la projection XY des segments linéaires sans extrusion ni rétraction, hors tour de purge, changements de filament et blocs conditionnels balisés.</p>
+        <p>Un croisement correspond à un segment qui coupe le tracé d’une paroi extérieure déjà déposée sur la même couche. La hauteur de la buse et l’épaisseur de la paroi peuvent changer le résultat à l’impression. Les arcs sont comptés dans le CSV et exclus des distances XY.</p>
+        <p>Pour juger la finition, imprime les variantes retenues sur le même plateau avec le même filament et examine les mêmes surfaces.</p>
+      </details>
+    </div>
+  </main>
+  <footer class="shell fine" id="app-version" role="status"></footer>
+</body>
+</html>

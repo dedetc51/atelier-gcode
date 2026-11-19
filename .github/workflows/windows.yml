@@ -1,0 +1,88 @@
+name: Installer et publier pour Windows
+on:
+  push:
+    branches: [main]
+    paths: ['Cargo.toml', 'Cargo.lock', 'src/**', 'interface/**', 'packaging/windows/**', '.github/workflows/windows.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+concurrency:
+  group: windows-release
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    runs-on: windows-2025
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    env:
+      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: -C target-feature=+crt-static
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        name: Lire la version
+        shell: pwsh
+        run: |
+          $metadata = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "version=$($metadata.packages[0].version)" >> $env:GITHUB_OUTPUT
+      - name: Tester et compiler
+        shell: pwsh
+        run: |
+          cargo test --locked --release --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo build --locked --release --target x86_64-pc-windows-msvc
+      - name: Créer et tester l’installateur
+        shell: pwsh
+        env:
+          APP_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if (!(Get-Command makensis.exe -ErrorAction SilentlyContinue) -and !(Test-Path "${env:ProgramFiles(x86)}\NSIS\makensis.exe")) {
+            choco install nsis --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          $binary = 'target\x86_64-pc-windows-msvc\release\atelier-gcode.exe'
+          $setup = Join-Path $PWD 'dist\Atelier-Gcode-Setup-x64.exe'
+          ./packaging/windows/package.ps1 -Version $env:APP_VERSION -Binary $binary -Output $setup
+          ./packaging/windows/smoke.ps1 -Version $env:APP_VERSION -Binary $binary -Setup $setup
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-setup
+          path: dist/Atelier-Gcode-Setup-x64.exe
+          if-no-files-found: error
+
+  release:
+    needs: windows
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-setup
+      - name: Publier une nouvelle version stable
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.windows.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="v$VERSION"
+          api="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases"
+          status=$(curl --silent --show-error -H "Authorization: Bearer $GH_TOKEN" -o release.json -w '%{http_code}' "$api/tags/$tag")
+          case "$status" in
+            200) echo "La version $tag existe déjà."; exit 0 ;;
+            404) ;;
+            *) echo "GitHub a répondu $status"; exit 1 ;;
+          esac
+          last=$(curl --silent --show-error -H "Authorization: Bearer $GH_TOKEN" -o latest.json -w '%{http_code}' "$api/latest")
+          case "$last" in
+            200) previous=$(jq -r '.tag_name | ltrimstr("v")' latest.json)
+                 if ! dpkg --compare-versions "$VERSION" gt "$previous"; then echo "Version inférieure à $previous"; exit 1; fi ;;
+            404) ;;
+            *) echo "GitHub a répondu $last"; exit 1 ;;
+          esac
+          gh release create "$tag" Atelier-Gcode-Setup-x64.exe --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" --title "Atelier G-code $VERSION" --generate-notes --latest
